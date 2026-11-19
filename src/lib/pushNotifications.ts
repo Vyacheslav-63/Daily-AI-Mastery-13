@@ -281,7 +281,8 @@ export async function enablePushNotifications(): Promise<{
     if ('serviceWorker' in navigator && 'PushManager' in window) {
       const reg = await navigator.serviceWorker.ready;
       const keyRes = await fetch('/api/push/vapid-public-key');
-      if (keyRes.ok) {
+      const keyCt = keyRes.headers.get('content-type') || '';
+      if (keyRes.ok && keyCt.includes('application/json')) {
         const { publicKey } = (await keyRes.json()) as { publicKey?: string };
         if (publicKey) {
           let sub = await reg.pushManager.getSubscription();
@@ -370,7 +371,8 @@ export async function sendTestPushNotification(endpoint?: string): Promise<{
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ endpoint }),
       });
-      if (res.ok) {
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
         return { ok: true, via: 'web-push' };
       }
     } catch {

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Award,
   BookOpen,
+  Bot,
   CheckCircle2,
   Compass,
   Flame,
@@ -12,6 +13,7 @@ import {
 import type { User } from 'firebase/auth';
 import { ONBOARDING_LESSONS } from './data/onboardingLessons';
 import type {
+  AssistantMessage,
   Lesson,
   UserProgress,
   UserSettings,
@@ -29,10 +31,12 @@ import {
   resolveEffectiveProgress,
 } from './lib/curriculumEngine';
 import {
+  askAdaptiveAssistant,
   generateDeepDive,
   generateDynamicLesson,
   generateWeeklyQuiz,
 } from './lib/aiService';
+import { computeMasteryProfile } from './lib/assistantEngine';
 import {
   computeReminderSchedule,
   detectBrowserCapability,
@@ -56,6 +60,7 @@ import {
   signInWithGoogle,
   subscribeAuth,
 } from './lib/firebase';
+import { AssistantView } from './components/AssistantView';
 import { DailyGateQuiz } from './components/DailyGateQuiz';
 import { LessonView } from './components/LessonView';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAInstallButton';
@@ -63,11 +68,12 @@ import { RoadmapView } from './components/RoadmapView';
 import { SettingsView } from './components/SettingsView';
 import { WeeklyQuizView } from './components/WeeklyQuizView';
 
-type TabKey = 'lesson' | 'roadmap' | 'settings';
+type TabKey = 'lesson' | 'assistant' | 'roadmap' | 'settings';
 
 const LS_PROGRESS_KEY = 'daily_ai_mastery_progress_v1';
 const LS_LESSONS_KEY = 'daily_ai_mastery_lessons_v1';
 const LS_SETTINGS_KEY = 'daily_ai_mastery_settings_v1';
+const LS_ASSISTANT_KEY = 'daily_ai_mastery_assistant_v1';
 
 function loadLocalProgress(): UserProgress {
   try {
@@ -123,6 +129,28 @@ function loadLocalSettings(): UserSettings {
   }
 }
 
+function loadLocalAssistantMessages(): AssistantMessage[] {
+  try {
+    const raw = localStorage.getItem(LS_ASSISTANT_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (m): m is AssistantMessage =>
+          typeof m === 'object' &&
+          m !== null &&
+          typeof (m as { id?: unknown }).id === 'string' &&
+          typeof (m as { text?: unknown }).text === 'string' &&
+          ((m as { role?: unknown }).role === 'user' ||
+            (m as { role?: unknown }).role === 'assistant')
+      )
+      .slice(-20);
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('lesson');
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -157,6 +185,13 @@ export default function App() {
     useState<NotificationCapability>(() => detectBrowserCapability());
   const [reminderStatusText, setReminderStatusText] = useState<string | null>(null);
 
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>(() =>
+    loadLocalAssistantMessages()
+  );
+  const [isAssistantLoading, setIsAssistantLoading] = useState(false);
+  const [assistantError, setAssistantError] = useState<string | null>(null);
+  const [lastFailedPrompt, setLastFailedPrompt] = useState<string | null>(null);
+
   // Live 1-second timer for 24-hour unlock countdown
   useEffect(() => {
     const timer = setInterval(() => {
@@ -183,6 +218,17 @@ export default function App() {
       // Ignore storage quota errors
     }
   }, [lessonsMap]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        LS_ASSISTANT_KEY,
+        JSON.stringify(assistantMessages.slice(-20))
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [assistantMessages]);
 
   useEffect(() => {
     saveReminderPreferences(reminderPrefs);
@@ -504,11 +550,81 @@ export default function App() {
     setLessonError(null);
     setDeepDiveError(null);
     setWeeklyError(null);
+    setAssistantMessages([]);
+    setAssistantError(null);
     const resetLessons: Record<number, Lesson> = {};
     for (const l of ONBOARDING_LESSONS) resetLessons[l.day] = l;
     setLessonsMap(resetLessons);
     setActiveTab('lesson');
   };
+
+  const masteryProfile = useMemo(
+    () => computeMasteryProfile(progress, currentLesson, lessonsMap),
+    [progress, currentLesson, lessonsMap]
+  );
+
+  const handleSendAssistantMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed || isAssistantLoading) return;
+
+      const userMsg: AssistantMessage = {
+        id: `u_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        role: 'user',
+        text: trimmed,
+        createdAtMs: Date.now(),
+      };
+
+      const priorHistory = assistantMessages.slice(-8).map((m) => ({
+        role: m.role,
+        text: m.text,
+      }));
+
+      setAssistantMessages((prev) => [...prev.slice(-19), userMsg]);
+      setIsAssistantLoading(true);
+      setAssistantError(null);
+      setLastFailedPrompt(null);
+
+      try {
+        const reply = await askAdaptiveAssistant({
+          message: trimmed,
+          history: priorHistory,
+          profile: masteryProfile,
+          settings,
+        });
+
+        const assistantMsg: AssistantMessage = {
+          id: `a_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          role: 'assistant',
+          text: reply.answer,
+          keyTakeaways: reply.keyTakeaways,
+          codeSnippet: reply.codeSnippet,
+          codeLanguage: reply.codeLanguage,
+          nextDepthSuggestions: reply.nextDepthSuggestions,
+          depthLabel: masteryProfile.label,
+          createdAtMs: Date.now(),
+        };
+        setAssistantMessages((prev) => [...prev.slice(-19), assistantMsg]);
+      } catch (err) {
+        setLastFailedPrompt(trimmed);
+        setAssistantError(
+          err instanceof Error
+            ? err.message
+            : 'Не удалось получить ответ от ИИ-ассистента.'
+        );
+      } finally {
+        setIsAssistantLoading(false);
+      }
+    },
+    [assistantMessages, isAssistantLoading, masteryProfile, settings]
+  );
+
+  const handleAskAssistantAboutLesson = useCallback(() => {
+    const prompt = `Подбери самое важное и углубись в тему Дня ${masteryProfile.currentDay}: «${masteryProfile.currentTopic}»`;
+    setActiveTab('assistant');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    void handleSendAssistantMessage(prompt);
+  }, [handleSendAssistantMessage, masteryProfile.currentDay, masteryProfile.currentTopic]);
 
   const unlockStatus = useMemo(
     () => getNextUnlockStatus(progress, nowMs),
@@ -556,6 +672,17 @@ export default function App() {
               }`}
             >
               Урок дня
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('assistant')}
+              className={`whitespace-nowrap shrink-0 py-1 border-b-2 transition-colors ${
+                activeTab === 'assistant'
+                  ? 'border-sky-400 text-sky-300'
+                  : 'border-transparent text-slate-400 hover:text-slate-100'
+              }`}
+            >
+              ИИ-ассистент
             </button>
             <button
               type="button"
@@ -690,6 +817,10 @@ export default function App() {
                   }}
                   onCompleteWeekly={handleCompleteWeekly}
                   onGoToRoadmap={() => setActiveTab('roadmap')}
+                  onOpenSettings={() => {
+                    setActiveTab('settings');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
                 />
               ) : needsGate ? (
                 <DailyGateQuiz
@@ -728,9 +859,34 @@ export default function App() {
                     }
                   }}
                   onOpenRoadmap={() => setActiveTab('roadmap')}
+                  onOpenSettings={() => {
+                    setActiveTab('settings');
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }}
+                  onAskAssistant={handleAskAssistantAboutLesson}
                 />
               )}
             </>
+          )}
+
+          {activeTab === 'assistant' && (
+            <AssistantView
+              profile={masteryProfile}
+              messages={assistantMessages}
+              isLoading={isAssistantLoading}
+              error={assistantError}
+              lastFailedPrompt={lastFailedPrompt}
+              onSendMessage={handleSendAssistantMessage}
+              onClearHistory={() => {
+                setAssistantMessages([]);
+                setAssistantError(null);
+                setLastFailedPrompt(null);
+              }}
+              onOpenSettings={() => {
+                setActiveTab('settings');
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+            />
           )}
 
           {activeTab === 'roadmap' && (
@@ -779,10 +935,13 @@ export default function App() {
         aria-label="Мобильная навигация"
         className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#090F1D]/90 backdrop-blur-xl border-t border-white/10 pb-safe"
       >
-        <div className="grid grid-cols-3 h-16 max-w-lg mx-auto">
+        <div className="grid grid-cols-4 h-16 max-w-lg mx-auto">
           <button
             type="button"
-            onClick={() => setActiveTab('lesson')}
+            onClick={() => {
+              setActiveTab('lesson');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
             className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition-colors ${
               activeTab === 'lesson' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'
             }`}
@@ -793,7 +952,24 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setActiveTab('roadmap')}
+            onClick={() => {
+              setActiveTab('assistant');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+            className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition-colors ${
+              activeTab === 'assistant' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            <Bot className="w-5 h-5" />
+            <span className="text-[11px] font-medium tracking-tight">Ассистент</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('roadmap');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
             className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition-colors ${
               activeTab === 'roadmap' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'
             }`}
@@ -804,7 +980,10 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => setActiveTab('settings')}
+            onClick={() => {
+              setActiveTab('settings');
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
             className={`min-h-[44px] flex flex-col items-center justify-center gap-1 transition-colors ${
               activeTab === 'settings' ? 'text-sky-400' : 'text-slate-400 hover:text-slate-200'
             }`}

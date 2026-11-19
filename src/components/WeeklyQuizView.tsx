@@ -4,6 +4,7 @@ import {
   Award,
   CheckCircle2,
   RefreshCw,
+  Settings,
   XCircle,
 } from 'lucide-react';
 import type { WeeklyQuiz } from '../types/curriculum';
@@ -18,6 +19,7 @@ interface WeeklyQuizViewProps {
   onRetryLoad: () => void;
   onCompleteWeekly: (correctCount: number, totalCount: number) => void;
   onGoToRoadmap: () => void;
+  onOpenSettings: () => void;
 }
 
 export const WeeklyQuizView: React.FC<WeeklyQuizViewProps> = ({
@@ -29,6 +31,7 @@ export const WeeklyQuizView: React.FC<WeeklyQuizViewProps> = ({
   onRetryLoad,
   onCompleteWeekly,
   onGoToRoadmap,
+  onOpenSettings,
 }) => {
   const [currentIdx, setCurrentIdx] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
@@ -61,6 +64,14 @@ export const WeeklyQuizView: React.FC<WeeklyQuizViewProps> = ({
           >
             <RefreshCw className="w-4 h-4" />
             <span>Повторить попытку</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="min-h-[44px] px-5 py-2.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-400/35 text-violet-100 font-semibold text-sm flex items-center gap-2 transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+            <span>Открыть Настройки</span>
           </button>
           <button
             type="button"

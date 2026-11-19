@@ -1,4 +1,12 @@
-import type { DeepDiveData, Lesson, UserSettings, WeeklyQuiz } from '../types/curriculum';
+import type {
+  AssistantReply,
+  DeepDiveData,
+  Lesson,
+  MasteryProfile,
+  UserSettings,
+  WeeklyQuiz,
+} from '../types/curriculum';
+import { buildAssistantSystemPrompt, parseAssistantReply } from './assistantEngine';
 import { parseGeneratedLessonPayload, parseWeeklyQuizPayload } from './curriculumEngine';
 
 const DEFAULT_DIRECT_BASE = 'https://generativelanguage.googleapis.com';
@@ -11,6 +19,78 @@ function normalizeBaseUrl(url: string): string {
     return `https://${trimmed}`;
   }
   return trimmed;
+}
+
+export const STATIC_HOSTING_API_ERROR =
+  'Серверный API (/api) недоступен на статическом хостинге (например, Netlify). Откройте раздел «Настройки» и укажите свой бесплатный Gemini API-ключ — он хранится только на вашем устройстве, и Deep Dive заработает напрямую.';
+
+/**
+ * Pure helper: safely parses JSON from a fetch response body and detects HTML
+ * fallbacks (such as Netlify SPA 200 index.html redirects or proxy error pages)
+ * before JSON.parse throws "Unexpected token '<'".
+ */
+export function parseJsonResponseText<T>(
+  text: string,
+  contentType: string | null,
+  status: number,
+  context: 'backend' | 'direct',
+  fallbackMessage: string
+): T {
+  const trimmed = text.trim();
+  const isHtml =
+    (contentType !== null && contentType.toLowerCase().includes('text/html')) ||
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<!doctype') ||
+    trimmed.startsWith('<html') ||
+    trimmed.startsWith('<HTML');
+
+  if (isHtml || (context === 'backend' && (status === 404 || status === 405))) {
+    if (context === 'backend') {
+      throw new Error(STATIC_HOSTING_API_ERROR);
+    }
+    throw new Error(
+      `Прокси или сервер вернул HTML-страницу вместо JSON (HTTP ${status}). Проверьте Proxy URL в Настройках или доступность API в вашей сети.`
+    );
+  }
+
+  if (!trimmed) {
+    throw new Error(`${fallbackMessage} (пустой ответ, HTTP ${status}).`);
+  }
+
+  try {
+    return JSON.parse(trimmed) as T;
+  } catch {
+    throw new Error(
+      `${fallbackMessage} (некорректный формат ответа, HTTP ${status}).`
+    );
+  }
+}
+
+async function fetchBackendRawJson(
+  endpoint: string,
+  body: Record<string, unknown>,
+  fallbackMessage: string
+): Promise<string> {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  const text = await response.text();
+  const data = parseJsonResponseText<{ raw?: string; error?: string }>(
+    text,
+    response.headers.get('content-type'),
+    response.status,
+    'backend',
+    fallbackMessage
+  );
+
+  if (!response.ok || !data.raw) {
+    throw new Error(data.error || fallbackMessage);
+  }
+
+  return data.raw;
 }
 
 /**
@@ -44,16 +124,29 @@ async function callDirectGeminiRest(
     }),
   });
 
+  const bodyText = await response.text();
   if (!response.ok) {
-    const errText = await response.text().catch(() => '');
+    const trimmed = bodyText.trim();
+    if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html')) {
+      throw new Error(
+        `Прямой запрос к Gemini заблокирован или прокси вернул HTML (HTTP ${response.status}). Проверьте Proxy URL в Настройках.`
+      );
+    }
     throw new Error(
-      `Ошибка прямого запроса (${response.status}): ${errText.slice(0, 180) || response.statusText}`
+      `Ошибка прямого запроса (${response.status}): ${trimmed.slice(0, 180) || response.statusText}`
     );
   }
 
-  const json = (await response.json()) as {
+  const json = parseJsonResponseText<{
     candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  };
+  }>(
+    bodyText,
+    response.headers.get('content-type'),
+    response.status,
+    'direct',
+    'Не удалось разобрать ответ от Gemini API'
+  );
+
   const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) {
     throw new Error('Прокси вернул пустой ответ от модели Gemini.');
@@ -109,17 +202,12 @@ export async function generateDynamicLesson(
     return parseGeneratedLessonPayload(raw, day);
   }
 
-  const response = await fetch('/api/lessons/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ day, previousTopics }),
-  });
-
-  const data = (await response.json()) as { raw?: string; error?: string };
-  if (!response.ok || !data.raw) {
-    throw new Error(data.error || 'Не удалось сгенерировать урок.');
-  }
-  return parseGeneratedLessonPayload(data.raw, day);
+  const raw = await fetchBackendRawJson(
+    '/api/lessons/generate',
+    { day, previousTopics },
+    'Не удалось сгенерировать урок.'
+  );
+  return parseGeneratedLessonPayload(raw, day);
 }
 
 export async function generateDeepDive(
@@ -150,16 +238,11 @@ export async function generateDeepDive(
       schema
     );
   } else {
-    const response = await fetch('/api/lessons/deep-dive', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic, content }),
-    });
-    const data = (await response.json()) as { raw?: string; error?: string };
-    if (!response.ok || !data.raw) {
-      throw new Error(data.error || 'Не удалось выполнить Deep Dive.');
-    }
-    raw = data.raw;
+    raw = await fetchBackendRawJson(
+      '/api/lessons/deep-dive',
+      { topic, content },
+      'Не удалось выполнить Deep Dive.'
+    );
   }
 
   const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -217,14 +300,102 @@ export async function generateWeeklyQuiz(
     return parseWeeklyQuizPayload(raw, day);
   }
 
-  const response = await fetch('/api/lessons/weekly-quiz', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ day, coveredLessons }),
-  });
-  const data = (await response.json()) as { raw?: string; error?: string };
-  if (!response.ok || !data.raw) {
-    throw new Error(data.error || 'Не удалось сгенерировать еженедельный срез.');
+  const raw = await fetchBackendRawJson(
+    '/api/lessons/weekly-quiz',
+    { day, coveredLessons },
+    'Не удалось сгенерировать еженедельный срез.'
+  );
+  return parseWeeklyQuizPayload(raw, day);
+}
+
+export async function askAdaptiveAssistant(params: {
+  message: string;
+  history: Array<{ role: 'user' | 'assistant'; text: string }>;
+  profile: MasteryProfile;
+  settings: UserSettings;
+}): Promise<AssistantReply> {
+  const systemPrompt = buildAssistantSystemPrompt(params.profile);
+  const trimmedHistory = params.history.slice(-8);
+
+  if (params.settings.customApiKey.trim()) {
+    const baseUrl = normalizeBaseUrl(params.settings.customBaseUrl);
+    const endpoint = `${baseUrl}/v1beta/models/${MODEL_NAME}:generateContent`;
+
+    const schema = {
+      type: 'OBJECT',
+      properties: {
+        answer: { type: 'STRING' },
+        keyTakeaways: { type: 'ARRAY', items: { type: 'STRING' } },
+        codeSnippet: { type: 'STRING' },
+        codeLanguage: { type: 'STRING' },
+        nextDepthSuggestions: { type: 'ARRAY', items: { type: 'STRING' } },
+      },
+      required: ['answer', 'keyTakeaways', 'nextDepthSuggestions'],
+    };
+
+    const contents = [
+      ...trimmedHistory.map((item) => ({
+        role: item.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: item.text.slice(0, 1800) }],
+      })),
+      { role: 'user', parts: [{ text: params.message.trim().slice(0, 1500) }] },
+    ];
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': params.settings.customApiKey.trim(),
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemPrompt }] },
+        contents,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: schema,
+          thinkingConfig: { thinkingLevel: 'LOW' },
+        },
+      }),
+    });
+
+    const bodyText = await response.text();
+    if (!response.ok) {
+      const trimmed = bodyText.trim();
+      if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html')) {
+        throw new Error(
+          `Прямой запрос к Gemini заблокирован или прокси вернул HTML (HTTP ${response.status}). Проверьте Proxy URL в Настройках.`
+        );
+      }
+      throw new Error(
+        `Ошибка прямого запроса (${response.status}): ${trimmed.slice(0, 180) || response.statusText}`
+      );
+    }
+
+    const json = parseJsonResponseText<{
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    }>(
+      bodyText,
+      response.headers.get('content-type'),
+      response.status,
+      'direct',
+      'Не удалось разобрать ответ ИИ-ассистента'
+    );
+
+    const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      throw new Error('Модель Gemini вернула пустой ответ.');
+    }
+    return parseAssistantReply(text);
   }
-  return parseWeeklyQuizPayload(data.raw, day);
+
+  const raw = await fetchBackendRawJson(
+    '/api/assistant/chat',
+    {
+      message: params.message,
+      history: trimmedHistory,
+      systemPrompt,
+    },
+    'Не удалось получить ответ ИИ-ассистента.'
+  );
+  return parseAssistantReply(raw);
 }

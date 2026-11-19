@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Bell,
   BellRing,
+  Bot,
   Check,
   CheckCircle2,
   Clock,
@@ -10,6 +11,7 @@ import {
   Layers,
   Lock,
   RefreshCw,
+  Settings,
 } from 'lucide-react';
 import type { Lesson } from '../types/curriculum';
 import { formatCountdown } from '../lib/curriculumEngine';
@@ -34,6 +36,8 @@ interface LessonViewProps {
   onCompleteLesson: () => void;
   onOpenNextDay: () => void;
   onOpenRoadmap: () => void;
+  onOpenSettings: () => void;
+  onAskAssistant: () => void;
 }
 
 export const LessonView: React.FC<LessonViewProps> = ({
@@ -54,6 +58,8 @@ export const LessonView: React.FC<LessonViewProps> = ({
   onCompleteLesson,
   onOpenNextDay,
   onOpenRoadmap,
+  onOpenSettings,
+  onAskAssistant,
 }) => {
   const [copiedBlock, setCopiedBlock] = useState<'main' | 'deep' | null>(null);
   const [heroImgFailed, setHeroImgFailed] = useState(false);
@@ -89,6 +95,14 @@ export const LessonView: React.FC<LessonViewProps> = ({
           >
             <RefreshCw className="w-4 h-4" />
             <span>Повторить генерацию</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            className="min-h-[44px] px-5 py-2.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 border border-violet-400/35 text-violet-100 font-semibold text-sm flex items-center gap-2 transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+            <span>Открыть Настройки</span>
           </button>
           <button
             type="button"
@@ -208,33 +222,55 @@ export const LessonView: React.FC<LessonViewProps> = ({
             </div>
           )}
 
-          {/* Deep Dive Trigger & Expanded Section */}
+          {/* Deep Dive & Adaptive Assistant Triggers */}
           <div className="pt-2 border-t border-white/10">
-            {!lesson.deepDive && !isDeepDiveLoading && (
-              <button
-                type="button"
-                aria-expanded={false}
-                onClick={onRequestDeepDive}
-                className="w-full sm:w-auto min-h-[48px] px-5 py-3 rounded-2xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-400/35 text-violet-200 font-semibold text-sm flex items-center justify-center gap-2 transition-colors"
-              >
-                <Layers className="w-4 h-4 shrink-0" />
-                <span>Углубиться в тему</span>
-              </button>
+            {!isDeepDiveLoading && (
+              <div className="flex flex-col sm:flex-row gap-2.5">
+                {!lesson.deepDive && (
+                  <button
+                    type="button"
+                    aria-expanded={false}
+                    onClick={onRequestDeepDive}
+                    className="w-full sm:w-auto min-h-[48px] px-5 py-3 rounded-2xl bg-violet-500/15 hover:bg-violet-500/25 border border-violet-400/35 text-violet-200 font-semibold text-sm flex items-center justify-center gap-2 transition-colors"
+                  >
+                    <Layers className="w-4 h-4 shrink-0" />
+                    <span>Углубиться в тему</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={onAskAssistant}
+                  className="w-full sm:w-auto min-h-[48px] px-5 py-3 rounded-2xl bg-sky-500/15 hover:bg-sky-500/25 border border-sky-400/35 text-sky-200 font-semibold text-sm flex items-center justify-center gap-2 transition-colors"
+                >
+                  <Bot className="w-4 h-4 shrink-0" />
+                  <span>Разобрать с ИИ-ассистентом</span>
+                </button>
+              </div>
             )}
 
             {isDeepDiveLoading && <DeepDiveSkeleton />}
 
             {deepDiveError && !isDeepDiveLoading && (
               <div className="mt-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 p-4 space-y-3 animate-fade-up">
-                <p className="text-sm text-rose-200">{deepDiveError}</p>
-                <button
-                  type="button"
-                  onClick={onRequestDeepDive}
-                  className="min-h-[40px] px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  <span>Повторить Deep Dive</span>
-                </button>
+                <p className="text-sm text-rose-200 leading-relaxed">{deepDiveError}</p>
+                <div className="flex flex-wrap gap-2.5">
+                  <button
+                    type="button"
+                    onClick={onOpenSettings}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <Settings className="w-3.5 h-3.5" />
+                    <span>Открыть Настройки</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onRequestDeepDive}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-100 text-xs font-semibold inline-flex items-center gap-1.5 transition-colors"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Повторить Deep Dive</span>
+                  </button>
+                </div>
               </div>
             )}
 

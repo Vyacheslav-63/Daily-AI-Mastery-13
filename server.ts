@@ -366,6 +366,86 @@ ${summary}
     }
   });
 
+  app.post('/api/assistant/chat', async (req, res) => {
+    try {
+      const message =
+        typeof req.body?.message === 'string' ? req.body.message.trim().slice(0, 1500) : '';
+      const systemPrompt =
+        typeof req.body?.systemPrompt === 'string'
+          ? req.body.systemPrompt.trim().slice(0, 3000)
+          : 'Ты — персональный ИИ-наставник курса Daily AI Mastery. Отвечай на русском языке строго валидным JSON.';
+      const history: Array<{ role: string; text: string }> = Array.isArray(req.body?.history)
+        ? (req.body.history as unknown[])
+            .filter(
+              (m): m is { role: string; text: string } =>
+                typeof m === 'object' &&
+                m !== null &&
+                typeof (m as { role?: unknown }).role === 'string' &&
+                typeof (m as { text?: unknown }).text === 'string'
+            )
+            .slice(-8)
+        : [];
+
+      if (!message) {
+        return res.status(400).json({ error: 'Введите вопрос или выберите подсказку.' });
+      }
+
+      const ai = getAiClient();
+      const contents = [
+        ...history.map((h) => ({
+          role: h.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: h.text.slice(0, 1800) }],
+        })),
+        { role: 'user', parts: [{ text: message }] },
+      ];
+
+      const response = await callWithRetry(() =>
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            systemInstruction: systemPrompt,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                answer: {
+                  type: Type.STRING,
+                  description: 'Понятный структурированный ответ на русском языке (2-3 абзаца)',
+                },
+                keyTakeaways: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description: '2-3 ключевых вывода или шага практики',
+                },
+                codeSnippet: {
+                  type: Type.STRING,
+                  description: 'Короткий практический фрагмент кода или конфига (если уместно, иначе пустая строка)',
+                },
+                codeLanguage: {
+                  type: Type.STRING,
+                  description: 'Язык кода, например typescript, bash, json',
+                },
+                nextDepthSuggestions: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                  description: '2-3 коротких вопроса-продолжения для следующего уровня углубления',
+                },
+              },
+              required: ['answer', 'keyTakeaways', 'nextDepthSuggestions'],
+            },
+          },
+        })
+      );
+
+      res.json({ raw: response.text ?? '{}' });
+    } catch (err) {
+      const { status, message } = getErrorMessage(err);
+      res.status(status).json({ error: message });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     // Serve a zero-WebSocket Vite client shim because HMR is disabled;
     // prevents proxied HTTPS environments from attempting wss://:24678.

@@ -65,3 +65,37 @@ export interface QuizResultRecord {
   passed: boolean;
   completedAtMs: number;
 }
+
+export type AssistantDepthLevel = 1 | 2 | 3 | 4;
+
+export interface MasteryProfile {
+  level: AssistantDepthLevel;
+  label: 'Старт' | 'Практик' | 'Инженер' | 'Архитектор';
+  depthHint: string;
+  currentDay: number;
+  currentTopic: string;
+  currentCategory: string;
+  completedTopics: string[];
+  accuracyPercent: number;
+  suggestedPrompts: string[];
+}
+
+export interface AssistantReply {
+  answer: string;
+  keyTakeaways: string[];
+  codeSnippet?: string;
+  codeLanguage?: string;
+  nextDepthSuggestions: string[];
+}
+
+export interface AssistantMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+  keyTakeaways?: string[];
+  codeSnippet?: string;
+  codeLanguage?: string;
+  nextDepthSuggestions?: string[];
+  depthLabel?: string;
+  createdAtMs: number;
+}

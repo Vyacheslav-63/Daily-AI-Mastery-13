@@ -97,60 +97,104 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   };
 
   return (
-    <div className="space-y-6 animate-fade-up">
-      {/* Profile & Firebase Sync */}
-      <section className="glass-surface rounded-3xl p-6 space-y-4">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-1">
-            <h2 className="text-lg font-bold text-slate-100">Профиль и синхронизация</h2>
-            <p className="text-xs text-slate-400 leading-relaxed">
-              {user
-                ? 'Прогресс синхронизируется с облаком Firestore между вашими устройствами.'
-                : 'Сейчас прогресс сохраняется локально в браузере. Войдите через Google для облачной синхронизации.'}
-            </p>
+    <div className="space-y-5 animate-fade-up">
+      {/* 1. API Key & Proxy Bypass (Top priority for static/Netlify & BYOK) */}
+      <section className="glass-surface rounded-3xl p-5 sm:p-6 space-y-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2 text-sky-300 text-xs font-semibold">
+            <ShieldCheck className="w-4 h-4" />
+            <span>Подключение ИИ-ассистента и обход блокировок</span>
           </div>
+          <h2 className="text-lg font-bold text-slate-100">
+            Gemini API-ключ и Proxy URL
+          </h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            Ключ хранится только локально на вашем устройстве. Нужен при запуске на статическом хостинге (Netlify) или для работы через свой Cloudflare Worker.
+          </p>
         </div>
 
-        {user ? (
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 rounded-2xl bg-slate-900/70 border border-slate-800 p-4">
-            <div className="min-w-0 space-y-0.5">
-              <p className="text-sm font-semibold text-slate-100 truncate">
-                {user.displayName || 'Пользователь'}
-              </p>
-              <p className="text-xs text-slate-400 truncate">{user.email}</p>
+        <form onSubmit={handleSave} className="space-y-3.5">
+          <div className="space-y-1.5">
+            <label
+              htmlFor="custom-gemini-key"
+              className="block text-xs font-semibold text-slate-300"
+            >
+              Личный Gemini API-ключ
+            </label>
+            <div className="relative flex items-center">
+              <KeyRound className="w-4 h-4 text-slate-500 absolute left-3.5 pointer-events-none" />
+              <input
+                id="custom-gemini-key"
+                type={showKey ? 'text' : 'password'}
+                value={apiKeyInput}
+                onChange={(e) => setApiKeyInput(e.target.value)}
+                placeholder="AIza..."
+                autoComplete="off"
+                className="w-full min-h-[46px] pl-10 pr-12 rounded-xl bg-slate-950/80 border border-slate-700/70 focus:border-sky-400 focus:outline-none text-sm text-slate-100 placeholder:text-slate-600 font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => setShowKey((v) => !v)}
+                aria-label={showKey ? 'Скрыть ключ' : 'Показать ключ'}
+                className="min-h-[44px] min-w-[44px] absolute right-0.5 flex items-center justify-center text-slate-400 hover:text-slate-200"
+              >
+                {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={onSignOut}
-              className="min-h-[44px] px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center justify-center gap-2 transition-colors shrink-0"
-            >
-              <LogOut className="w-4 h-4" />
-              <span>Выйти</span>
-            </button>
           </div>
-        ) : (
-          <div className="space-y-3">
-            <button
-              type="button"
-              disabled={authLoading}
-              onClick={handleSignIn}
-              className="w-full min-h-[48px] px-4 py-3 rounded-2xl bg-slate-100 hover:bg-white text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+
+          <div className="space-y-1.5">
+            <label
+              htmlFor="custom-proxy-url"
+              className="block text-xs font-semibold text-slate-300"
             >
-              <LogIn className="w-4 h-4" />
-              <span>Войти через Google (Firebase)</span>
+              Proxy / Base URL (опционально, например Cloudflare Workers)
+            </label>
+            <div className="relative flex items-center">
+              <Globe className="w-4 h-4 text-slate-500 absolute left-3.5 pointer-events-none" />
+              <input
+                id="custom-proxy-url"
+                type="url"
+                value={baseUrlInput}
+                onChange={(e) => setBaseUrlInput(e.target.value)}
+                placeholder="https://my-gemini-proxy.workers.dev"
+                className="w-full min-h-[46px] pl-10 pr-4 rounded-xl bg-slate-950/80 border border-slate-700/70 focus:border-sky-400 focus:outline-none text-sm text-slate-100 placeholder:text-slate-600 font-mono"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 pt-1">
+            <button
+              type="submit"
+              className="min-h-[44px] px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-sm flex items-center gap-2 transition-colors"
+            >
+              {savedNotice ? (
+                <>
+                  <Check className="w-4 h-4" />
+                  <span>Сохранено</span>
+                </>
+              ) : (
+                <span>Сохранить настройки</span>
+              )}
             </button>
-            {authError && (
-              <p className="text-xs text-rose-300 leading-relaxed">{authError}</p>
+            {(apiKeyInput || baseUrlInput) && (
+              <button
+                type="button"
+                onClick={handleClearApi}
+                className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
+              >
+                Очистить
+              </button>
             )}
           </div>
-        )}
+        </form>
       </section>
 
-      {/* PWA Push Notifications & Mobile Install */}
-      <section className="glass-surface rounded-3xl p-6 space-y-5">
+      {/* 2. Push Notifications & Mobile PWA Install */}
+      <section className="glass-surface rounded-3xl p-5 sm:p-6 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
-            <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+            <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
               {remindersEnabled ? (
                 <BellRing className="w-5 h-5 text-sky-400 shrink-0" />
               ) : (
@@ -159,7 +203,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <span>Push-уведомления о новых уроках</span>
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
-              Напоминает через Service Worker, когда истекает 24-часовой таймер и открывается новый урок или еженедельный срез.
+              Напоминает, когда истекает 24-часовой таймер нового урока.
             </p>
           </div>
           <button
@@ -190,9 +234,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
 
-        <div className="rounded-2xl bg-slate-900/70 border border-white/5 p-4 space-y-2.5 text-xs">
+        <div className="rounded-2xl bg-slate-900/70 border border-white/5 p-3.5 space-y-2 text-xs">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-slate-400">Статус уведомлений</span>
+            <span className="text-slate-400">Статус</span>
             <span
               className={`font-semibold flex items-center gap-1.5 ${
                 remindersEnabled
@@ -215,7 +259,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               ) : notificationCapability === 'ios-needs-install' ? (
                 <span>Установите на экран «Домой» (iOS)</span>
               ) : notificationCapability === 'unsupported' ? (
-                <span>Не поддерживается браузером</span>
+                <span>Не поддерживается</span>
               ) : (
                 <span>Отключено</span>
               )}
@@ -224,7 +268,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
           {remindersEnabled && reminderSchedule?.shouldScheduleFuture && (
             <p className="text-sky-300">
-              Запланировано: День {reminderSchedule.targetDay} · откроется в{' '}
+              День {reminderSchedule.targetDay} · откроется в{' '}
               <strong className="font-mono tabular-nums">
                 {formatReminderTime(reminderSchedule.unlockAtMs)}
               </strong>
@@ -255,116 +299,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         )}
 
-        <div className="pt-4 border-t border-white/10 space-y-2.5">
-          <h3 className="text-sm font-semibold text-slate-200">
-            Установка на телефон (PWA)
-          </h3>
+        <div className="pt-3 border-t border-white/10">
           <PWAInstallButton variant="card" />
         </div>
       </section>
 
-      {/* Custom API Key & Proxy Bypass (TZ 3.4 & 5) */}
-      <section className="glass-surface rounded-3xl p-6 space-y-5">
-        <div className="space-y-1.5">
-          <div className="flex items-center gap-2 text-sky-300 text-xs font-semibold">
-            <ShieldCheck className="w-4 h-4" />
-            <span>Обход блокировок и BYOK</span>
-          </div>
-          <h2 className="text-lg font-bold text-slate-100">
-            Пользовательский ключ и Proxy URL
-          </h2>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            По умолчанию запросы идут через встроенный защищённый серверный прокси. При необходимости вы можете указать собственный ключ Gemini и адрес Cloudflare Worker: ключ хранится исключительно локально в localStorage и не отправляется на сервер разработчика.
-          </p>
-        </div>
-
-        <form onSubmit={handleSave} className="space-y-4">
-          <div className="space-y-1.5">
-            <label
-              htmlFor="custom-gemini-key"
-              className="block text-xs font-semibold text-slate-300"
-            >
-              Личный Gemini API-ключ (опционально)
-            </label>
-            <div className="relative flex items-center">
-              <KeyRound className="w-4 h-4 text-slate-500 absolute left-3.5 pointer-events-none" />
-              <input
-                id="custom-gemini-key"
-                type={showKey ? 'text' : 'password'}
-                value={apiKeyInput}
-                onChange={(e) => setApiKeyInput(e.target.value)}
-                placeholder="AIza..."
-                autoComplete="off"
-                className="w-full min-h-[46px] pl-10 pr-12 rounded-xl bg-slate-950/80 border border-slate-700/70 focus:border-sky-400 focus:outline-none text-sm text-slate-100 placeholder:text-slate-600 font-mono"
-              />
-              <button
-                type="button"
-                onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? 'Скрыть ключ' : 'Показать ключ'}
-                className="min-h-[44px] min-w-[44px] absolute right-0.5 flex items-center justify-center text-slate-400 hover:text-slate-200"
-              >
-                {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          <div className="space-y-1.5">
-            <label
-              htmlFor="custom-proxy-url"
-              className="block text-xs font-semibold text-slate-300"
-            >
-              Кастомный Proxy / Base URL (например, Cloudflare Workers)
-            </label>
-            <div className="relative flex items-center">
-              <Globe className="w-4 h-4 text-slate-500 absolute left-3.5 pointer-events-none" />
-              <input
-                id="custom-proxy-url"
-                type="url"
-                value={baseUrlInput}
-                onChange={(e) => setBaseUrlInput(e.target.value)}
-                placeholder="https://my-gemini-proxy.workers.dev"
-                className="w-full min-h-[46px] pl-10 pr-4 rounded-xl bg-slate-950/80 border border-slate-700/70 focus:border-sky-400 focus:outline-none text-sm text-slate-100 placeholder:text-slate-600 font-mono"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3 pt-1">
-            <button
-              type="submit"
-              className="min-h-[44px] px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold text-sm flex items-center gap-2 transition-colors"
-            >
-              {savedNotice ? (
-                <>
-                  <Check className="w-4 h-4" />
-                  <span>Сохранено в localStorage</span>
-                </>
-              ) : (
-                <span>Сохранить настройки</span>
-              )}
-            </button>
-            {(apiKeyInput || baseUrlInput) && (
-              <button
-                type="button"
-                onClick={handleClearApi}
-                className="min-h-[44px] px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition-colors"
-              >
-                Вернуть встроенный сервер
-              </button>
-            )}
-          </div>
-        </form>
-      </section>
-
-      {/* Fast-Track Training Mode & PWA Install */}
-      <section className="glass-surface rounded-3xl p-6 space-y-5">
+      {/* 3. Fast-Track Training Mode & Reset */}
+      <section className="glass-surface rounded-3xl p-5 sm:p-6 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div className="space-y-1">
             <h2 className="text-base font-bold text-slate-100 flex items-center gap-2">
               <Zap className="w-4 h-4 text-violet-400" />
-              <span>Режим тренажёра (без 24ч ожидания)</span>
+              <span>Режим без 24ч ожидания</span>
             </h2>
             <p className="text-xs text-slate-400 leading-relaxed">
-              По умолчанию уроки открываются строго раз в 24 часа. Включите этот режим, чтобы сразу открывать следующие дни, тестировать генерацию Дня 6+ и срез Дня 7.
+              Открывайте следующие уроки сразу, без паузы 24 часа.
             </p>
           </div>
           <button
@@ -385,6 +334,52 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               }`}
             />
           </button>
+        </div>
+
+        {/* Profile & Cloud Sync (compact) */}
+        <div className="pt-4 border-t border-white/10 space-y-3">
+          <div className="space-y-0.5">
+            <h3 className="text-sm font-bold text-slate-100">Облачная синхронизация</h3>
+            <p className="text-xs text-slate-400">
+              {user
+                ? 'Прогресс синхронизируется с Firestore.'
+                : 'Войдите через Google, чтобы сохранять прогресс между устройствами.'}
+            </p>
+          </div>
+
+          {user ? (
+            <div className="flex items-center justify-between gap-3 rounded-2xl bg-slate-900/70 border border-slate-800 p-3.5">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-slate-100 truncate">
+                  {user.displayName || 'Пользователь'}
+                </p>
+                <p className="text-xs text-slate-400 truncate">{user.email}</p>
+              </div>
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="min-h-[42px] px-3.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold flex items-center gap-1.5 shrink-0"
+              >
+                <LogOut className="w-4 h-4" />
+                <span>Выйти</span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <button
+                type="button"
+                disabled={authLoading}
+                onClick={handleSignIn}
+                className="w-full min-h-[46px] px-4 py-2.5 rounded-2xl bg-slate-100 hover:bg-white text-slate-950 font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>Войти через Google (Firebase)</span>
+              </button>
+              {authError && (
+                <p className="text-xs text-rose-300 leading-relaxed">{authError}</p>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="pt-4 border-t border-white/10">
