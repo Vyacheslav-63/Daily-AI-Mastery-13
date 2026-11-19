@@ -10,7 +10,8 @@ import { buildAssistantSystemPrompt, parseAssistantReply } from './assistantEngi
 import { parseGeneratedLessonPayload, parseWeeklyQuizPayload } from './curriculumEngine';
 
 const DEFAULT_DIRECT_BASE = 'https://generativelanguage.googleapis.com';
-const MODEL_NAME = 'gemini-4-hydrogen';
+export const PRIMARY_MODEL = 'gemini-4-hydrogen';
+export const FALLBACK_MODEL = 'gemini-3.1-flash-lite';
 
 function normalizeBaseUrl(url: string): string {
   const trimmed = url.trim().replace(/\/+$/, '');
@@ -23,6 +24,127 @@ function normalizeBaseUrl(url: string): string {
 
 export const STATIC_HOSTING_API_ERROR =
   'Серверный API (/api) недоступен на статическом хостинге (например, Netlify). Откройте раздел «Настройки» и укажите свой бесплатный Gemini API-ключ — он хранится только на вашем устройстве, и Deep Dive заработает напрямую.';
+
+export class GeminiHttpError extends Error {
+  readonly status: number;
+  readonly rawBody: string;
+
+  constructor(status: number, message: string, rawBody = '') {
+    super(message);
+    this.name = 'GeminiHttpError';
+    this.status = status;
+    this.rawBody = rawBody;
+  }
+}
+
+/**
+ * Pure helper: turns raw Gemini REST HTTP error bodies into clear, actionable
+ * Russian messages instead of leaking truncated JSON payloads.
+ */
+export function formatGeminiDirectError(status: number, bodyText: string): string {
+  const trimmed = bodyText.trim();
+  if (
+    trimmed.startsWith('<!DOCTYPE') ||
+    trimmed.startsWith('<!doctype') ||
+    trimmed.startsWith('<html') ||
+    trimmed.startsWith('<HTML')
+  ) {
+    return `Прямой запрос к Gemini заблокирован или прокси вернул HTML (HTTP ${status}). Проверьте Proxy URL в Настройках.`;
+  }
+
+  let apiMessage = '';
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: { message?: string } };
+    if (typeof parsed?.error?.message === 'string') {
+      apiMessage = parsed.error.message;
+    }
+  } catch {
+    apiMessage = trimmed.slice(0, 160);
+  }
+
+  const lower = apiMessage.toLowerCase();
+
+  if (status === 503 || lower.includes('high demand') || lower.includes('overloaded')) {
+    return 'Серверы Gemini сейчас временно перегружены (503). Мы автоматически повторили запрос и попробовали резервную модель — попробуйте ещё раз через 10–15 секунд.';
+  }
+
+  if (status === 429 || lower.includes('quota') || lower.includes('rate limit')) {
+    const retryMatch = apiMessage.match(/retry in\s+(\d+(?:\.\d+)?)s/i);
+    const waitHint = retryMatch
+      ? ` Подождите около ${Math.ceil(Number(retryMatch[1]))} сек.`
+      : ' Подождите 30–60 секунд перед следующим запросом.';
+    return `Достигнут лимит запросов бесплатного тарифа Gemini API (429).${waitHint} Если ошибка повторяется весь день — проверьте суточную квоту ключа в Google AI Studio.`;
+  }
+
+  if (lower.includes('location is not supported') || lower.includes('region')) {
+    return 'Прямой доступ к Gemini API ограничен в вашем регионе. Укажите адрес Cloudflare Worker в поле Proxy URL в разделе «Настройки».';
+  }
+
+  if (
+    status === 401 ||
+    status === 403 ||
+    lower.includes('api key not valid') ||
+    lower.includes('api_key_invalid')
+  ) {
+    return 'Неверный или отозванный Gemini API-ключ. Проверьте ключ в разделе «Настройки».';
+  }
+
+  return `Ошибка Gemini API (HTTP ${status}): ${apiMessage.slice(0, 160) || 'повторите попытку позже.'}`;
+}
+
+/**
+ * Pure helper: runs a Gemini model call with exponential backoff on 503/429
+ * and automatic fallback from gemini-4-hydrogen to gemini-3.1-flash-lite.
+ */
+export async function executeWithModelFallback<T>(
+  runner: (model: string) => Promise<T>,
+  options?: {
+    sleep?: (ms: number) => Promise<void>;
+    baseDelayMs?: number;
+  }
+): Promise<T> {
+  const sleep =
+    options?.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const baseDelayMs = options?.baseDelayMs ?? 700;
+
+  const isTransient = (err: unknown): number | null => {
+    const status = (err as { status?: number })?.status;
+    if (status === 503 || status === 429 || status === 500 || status === 502 || status === 504) {
+      return status;
+    }
+    return null;
+  };
+
+  // 1. Primary model (gemini-4-hydrogen)
+  try {
+    return await runner(PRIMARY_MODEL);
+  } catch (firstErr) {
+    const status = isTransient(firstErr);
+    if (!status) throw firstErr;
+
+    // On 503/5xx (temporary spike), do 1 quick retry on primary before falling back;
+    // on 429 (model quota/RPM limit), switch immediately to the separate lite quota.
+    if (status !== 429) {
+      await sleep(baseDelayMs + Math.floor(Math.random() * 250));
+      try {
+        return await runner(PRIMARY_MODEL);
+      } catch (retryErr) {
+        if (!isTransient(retryErr)) throw retryErr;
+      }
+    }
+  }
+
+  // 2. Fallback model (gemini-3.1-flash-lite — higher free-tier limits & lower load)
+  try {
+    return await runner(FALLBACK_MODEL);
+  } catch (fallbackErr) {
+    const status = isTransient(fallbackErr);
+    if (!status) throw fallbackErr;
+
+    await sleep(baseDelayMs * 2 + Math.floor(Math.random() * 300));
+    return await runner(FALLBACK_MODEL);
+  }
+}
 
 /**
  * Pure helper: safely parses JSON from a fetch response body and detects HTML
@@ -94,64 +216,80 @@ async function fetchBackendRawJson(
 }
 
 /**
- * When the user supplies their own Gemini API key in Settings, requests go directly
- * from the browser to the user's chosen Base URL (or official Gemini REST endpoint)
- * so the personal key never leaves the device to the developer's server.
+ * Shared direct Gemini REST caller with automatic 503/429 retry + fallback to
+ * gemini-3.1-flash-lite. Personal API keys stay strictly on the user's device.
  */
+async function callDirectGeminiContents(
+  settings: UserSettings,
+  contents: Array<{ role: string; parts: Array<{ text: string }> }>,
+  systemInstruction: string,
+  responseSchema: Record<string, unknown>
+): Promise<string> {
+  const baseUrl = normalizeBaseUrl(settings.customBaseUrl);
+  const apiKey = settings.customApiKey.trim();
+
+  return executeWithModelFallback(async (model) => {
+    const endpoint = `${baseUrl}/v1beta/models/${model}:generateContent`;
+    const generationConfig: Record<string, unknown> = {
+      responseMimeType: 'application/json',
+      responseSchema,
+    };
+    if (model === PRIMARY_MODEL) {
+      generationConfig.thinkingConfig = { thinkingLevel: 'LOW' };
+    }
+
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: systemInstruction }] },
+        contents,
+        generationConfig,
+      }),
+    });
+
+    const bodyText = await response.text();
+    if (!response.ok) {
+      throw new GeminiHttpError(
+        response.status,
+        formatGeminiDirectError(response.status, bodyText),
+        bodyText
+      );
+    }
+
+    const json = parseJsonResponseText<{
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    }>(
+      bodyText,
+      response.headers.get('content-type'),
+      response.status,
+      'direct',
+      'Не удалось разобрать ответ от Gemini API'
+    );
+
+    const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) {
+      throw new Error('Модель Gemini вернула пустой ответ.');
+    }
+    return text;
+  });
+}
+
 async function callDirectGeminiRest(
   settings: UserSettings,
   prompt: string,
   systemInstruction: string,
   responseSchema: Record<string, unknown>
 ): Promise<string> {
-  const baseUrl = normalizeBaseUrl(settings.customBaseUrl);
-  const endpoint = `${baseUrl}/v1beta/models/${MODEL_NAME}:generateContent`;
-
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': settings.customApiKey.trim(),
-    },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemInstruction }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        responseMimeType: 'application/json',
-        responseSchema,
-        thinkingConfig: { thinkingLevel: 'LOW' },
-      },
-    }),
-  });
-
-  const bodyText = await response.text();
-  if (!response.ok) {
-    const trimmed = bodyText.trim();
-    if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html')) {
-      throw new Error(
-        `Прямой запрос к Gemini заблокирован или прокси вернул HTML (HTTP ${response.status}). Проверьте Proxy URL в Настройках.`
-      );
-    }
-    throw new Error(
-      `Ошибка прямого запроса (${response.status}): ${trimmed.slice(0, 180) || response.statusText}`
-    );
-  }
-
-  const json = parseJsonResponseText<{
-    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-  }>(
-    bodyText,
-    response.headers.get('content-type'),
-    response.status,
-    'direct',
-    'Не удалось разобрать ответ от Gemini API'
+  return callDirectGeminiContents(
+    settings,
+    [{ role: 'user', parts: [{ text: prompt }] }],
+    systemInstruction,
+    responseSchema
   );
-
-  const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) {
-    throw new Error('Прокси вернул пустой ответ от модели Gemini.');
-  }
-  return text;
 }
 
 export async function generateDynamicLesson(
@@ -315,12 +453,13 @@ export async function askAdaptiveAssistant(params: {
   settings: UserSettings;
 }): Promise<AssistantReply> {
   const systemPrompt = buildAssistantSystemPrompt(params.profile);
-  const trimmedHistory = params.history.slice(-8);
+  // Keep recent context compact to preserve free-tier token-per-minute (TPM) quota
+  const trimmedHistory = params.history.slice(-6).map((item) => ({
+    role: item.role,
+    text: item.text.slice(0, 1200),
+  }));
 
   if (params.settings.customApiKey.trim()) {
-    const baseUrl = normalizeBaseUrl(params.settings.customBaseUrl);
-    const endpoint = `${baseUrl}/v1beta/models/${MODEL_NAME}:generateContent`;
-
     const schema = {
       type: 'OBJECT',
       properties: {
@@ -336,55 +475,17 @@ export async function askAdaptiveAssistant(params: {
     const contents = [
       ...trimmedHistory.map((item) => ({
         role: item.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: item.text.slice(0, 1800) }],
+        parts: [{ text: item.text }],
       })),
       { role: 'user', parts: [{ text: params.message.trim().slice(0, 1500) }] },
     ];
 
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': params.settings.customApiKey.trim(),
-      },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents,
-        generationConfig: {
-          responseMimeType: 'application/json',
-          responseSchema: schema,
-          thinkingConfig: { thinkingLevel: 'LOW' },
-        },
-      }),
-    });
-
-    const bodyText = await response.text();
-    if (!response.ok) {
-      const trimmed = bodyText.trim();
-      if (trimmed.startsWith('<!DOCTYPE') || trimmed.startsWith('<html')) {
-        throw new Error(
-          `Прямой запрос к Gemini заблокирован или прокси вернул HTML (HTTP ${response.status}). Проверьте Proxy URL в Настройках.`
-        );
-      }
-      throw new Error(
-        `Ошибка прямого запроса (${response.status}): ${trimmed.slice(0, 180) || response.statusText}`
-      );
-    }
-
-    const json = parseJsonResponseText<{
-      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
-    }>(
-      bodyText,
-      response.headers.get('content-type'),
-      response.status,
-      'direct',
-      'Не удалось разобрать ответ ИИ-ассистента'
+    const text = await callDirectGeminiContents(
+      params.settings,
+      contents,
+      systemPrompt,
+      schema
     );
-
-    const text = json.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) {
-      throw new Error('Модель Gemini вернула пустой ответ.');
-    }
     return parseAssistantReply(text);
   }
 

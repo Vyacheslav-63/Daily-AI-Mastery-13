@@ -16,6 +16,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 3000;
 const MODEL_NAME = 'gemini-4-hydrogen';
+const FALLBACK_MODEL_NAME = 'gemini-3.1-flash-lite';
 
 // VAPID configuration for PWA Web Push
 const vapidKeys =
@@ -68,30 +69,85 @@ function getAiClient() {
   });
 }
 
-async function callWithRetry<T>(fn: () => Promise<T>, retries = 2): Promise<T> {
-  let lastError: unknown;
-  for (let i = 0; i <= retries; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err;
-      const status = (err as { status?: number })?.status;
-      if (i === retries || (status && status >= 400 && status < 429)) {
-        throw err;
+function getTransientStatus(err: unknown): number | null {
+  const status = (err as { status?: number })?.status;
+  if (status === 503 || status === 429 || status === 500 || status === 502 || status === 504) {
+    return status;
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.includes('503') || msg.includes('UNAVAILABLE') || msg.includes('high demand')) {
+    return 503;
+  }
+  if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED')) {
+    return 429;
+  }
+  return null;
+}
+
+async function generateContentWithFallback(
+  ai: GoogleGenAI,
+  params: {
+    contents: unknown;
+    systemInstruction: string;
+    responseSchema: Record<string, unknown>;
+  }
+) {
+  const runModel = (model: string) =>
+    ai.models.generateContent({
+      model,
+      contents: params.contents as Parameters<typeof ai.models.generateContent>[0]['contents'],
+      config: {
+        ...(model === MODEL_NAME ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
+        systemInstruction: params.systemInstruction,
+        responseMimeType: 'application/json',
+        responseSchema: params.responseSchema,
+      },
+    });
+
+  try {
+    return await runModel(MODEL_NAME);
+  } catch (firstErr) {
+    const status = getTransientStatus(firstErr);
+    if (!status) throw firstErr;
+
+    if (status !== 429) {
+      await new Promise((r) => setTimeout(r, 700 + Math.floor(Math.random() * 250)));
+      try {
+        return await runModel(MODEL_NAME);
+      } catch (retryErr) {
+        if (!getTransientStatus(retryErr)) throw retryErr;
       }
-      await new Promise((r) => setTimeout(r, 400 * Math.pow(2, i)));
     }
   }
-  throw lastError;
+
+  try {
+    return await runModel(FALLBACK_MODEL_NAME);
+  } catch (fallbackErr) {
+    const status = getTransientStatus(fallbackErr);
+    if (!status) throw fallbackErr;
+
+    await new Promise((r) => setTimeout(r, 1400 + Math.floor(Math.random() * 300)));
+    return await runModel(FALLBACK_MODEL_NAME);
+  }
 }
 
 function getErrorMessage(err: unknown): { status: number; message: string } {
   const raw = err instanceof Error ? err.message : String(err);
+  const lower = raw.toLowerCase();
   if (raw.includes('API_KEY_INVALID') || raw.includes('PERMISSION_DENIED')) {
     return { status: 403, message: 'Ошибка авторизации Gemini API. Проверьте ключ в Secrets или в настройках.' };
   }
-  if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429')) {
-    return { status: 429, message: 'Превышена квота запросов к Gemini API. Повторите попытку чуть позже.' };
+  if (raw.includes('503') || raw.includes('UNAVAILABLE') || lower.includes('high demand') || lower.includes('overloaded')) {
+    return {
+      status: 503,
+      message: 'Серверы Gemini сейчас временно перегружены (503). Мы попробовали резервную модель — повторите запрос через 10–15 секунд.',
+    };
+  }
+  if (raw.includes('RESOURCE_EXHAUSTED') || raw.includes('429') || lower.includes('quota')) {
+    return {
+      status: 429,
+      message: 'Достигнут лимит запросов к Gemini API (429). Подождите 30–60 секунд и повторите попытку.',
+    };
   }
   return { status: 500, message: raw || 'Внутренняя ошибка генерации контента.' };
 }
@@ -202,49 +258,42 @@ async function startServer() {
 Выбери следующую логичную продвинутую тему (например: RAG и гибридный поиск, Eval-тестирование LLM, Multi-Agent оркестрация, Guardrails и PII-редакция, Edge-деплой, MCP Auth и Sandboxing, Кэширование промптов и оптимизация токенов, Observability/OpenTelemetry для агентов). Не повторяй предыдущие темы.
 Стиль: практичный, плотный, без воды, 3–4 абзаца + короткий рабочий пример кода + 1 проверочный вопрос по материалу этого урока с 4 вариантами ответа.`;
 
-      const response = await callWithRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            systemInstruction:
-              'Отвечай строго валидным JSON на русском языке согласно схеме. correct_answer должен в точности совпадать с одним из элементов options.',
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                topic: { type: Type.STRING, description: 'Заголовок урока (до 120 символов)' },
-                category: { type: Type.STRING, description: 'Короткая категория, 1-2 слова' },
-                readMinutes: { type: Type.INTEGER, description: 'Время чтения от 4 до 7 минут' },
-                content: { type: Type.STRING, description: 'Основной текст урока с абзацами через двойной перенос строки' },
-                code_example: { type: Type.STRING, description: 'Практический фрагмент кода TypeScript или YAML/JSON' },
-                code_language: { type: Type.STRING, description: 'Язык кода, например typescript' },
-                question: { type: Type.STRING, description: 'Контрольный вопрос для закрепления темы на следующий день' },
-                options: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: 'Ровно 4 варианта ответа',
-                },
-                correct_answer: { type: Type.STRING, description: 'Точная строка правильного варианта из options' },
-                explanation: { type: Type.STRING, description: 'Краткое объяснение правильного ответа' },
-              },
-              required: [
-                'topic',
-                'category',
-                'readMinutes',
-                'content',
-                'code_example',
-                'code_language',
-                'question',
-                'options',
-                'correct_answer',
-                'explanation',
-              ],
+      const response = await generateContentWithFallback(ai, {
+        contents: prompt,
+        systemInstruction:
+          'Отвечай строго валидным JSON на русском языке согласно схеме. correct_answer должен в точности совпадать с одним из элементов options.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            topic: { type: Type.STRING, description: 'Заголовок урока (до 120 символов)' },
+            category: { type: Type.STRING, description: 'Короткая категория, 1-2 слова' },
+            readMinutes: { type: Type.INTEGER, description: 'Время чтения от 4 до 7 минут' },
+            content: { type: Type.STRING, description: 'Основной текст урока с абзацами через двойной перенос строки' },
+            code_example: { type: Type.STRING, description: 'Практический фрагмент кода TypeScript или YAML/JSON' },
+            code_language: { type: Type.STRING, description: 'Язык кода, например typescript' },
+            question: { type: Type.STRING, description: 'Контрольный вопрос для закрепления темы на следующий день' },
+            options: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: 'Ровно 4 варианта ответа',
             },
+            correct_answer: { type: Type.STRING, description: 'Точная строка правильного варианта из options' },
+            explanation: { type: Type.STRING, description: 'Краткое объяснение правильного ответа' },
           },
-        })
-      );
+          required: [
+            'topic',
+            'category',
+            'readMinutes',
+            'content',
+            'code_example',
+            'code_language',
+            'question',
+            'options',
+            'correct_answer',
+            'explanation',
+          ],
+        },
+      });
 
       res.json({ raw: response.text ?? '{}' });
     } catch (err) {
@@ -272,30 +321,23 @@ ${content}
 3) language: язык кода (например typescript).
 4) tips: массив из 3-4 конкретных инженерных чек-поинтов для продакшена.`;
 
-      const response = await callWithRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            systemInstruction: 'Отвечай строго валидным JSON согласно responseSchema.',
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                overview: { type: Type.STRING },
-                code: { type: Type.STRING },
-                language: { type: Type.STRING },
-                tips: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                },
-              },
-              required: ['overview', 'code', 'language', 'tips'],
+      const response = await generateContentWithFallback(ai, {
+        contents: prompt,
+        systemInstruction: 'Отвечай строго валидным JSON согласно responseSchema.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            overview: { type: Type.STRING },
+            code: { type: Type.STRING },
+            language: { type: Type.STRING },
+            tips: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
             },
           },
-        })
-      );
+          required: ['overview', 'code', 'language', 'tips'],
+        },
+      });
 
       res.json({ raw: response.text ?? '{}' });
     } catch (err) {
@@ -325,39 +367,32 @@ ${summary}
 
 Каждый вопрос должен проверять глубокое понимание практики (прокси, безопасность, MCP, агенты, сети и т.д.), иметь ровно 4 варианта ответа, где correct_answer точно совпадает с одним из вариантов, и короткое пояснение.`;
 
-      const response = await callWithRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            systemInstruction: 'Отвечай строго валидным JSON на русском языке согласно схеме.',
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                questions: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      day: { type: Type.INTEGER },
-                      topic: { type: Type.STRING },
-                      question: { type: Type.STRING },
-                      options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                      correct_answer: { type: Type.STRING },
-                      explanation: { type: Type.STRING },
-                    },
-                    required: ['day', 'topic', 'question', 'options', 'correct_answer', 'explanation'],
-                  },
+      const response = await generateContentWithFallback(ai, {
+        contents: prompt,
+        systemInstruction: 'Отвечай строго валидным JSON на русском языке согласно схеме.',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            title: { type: Type.STRING },
+            questions: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  day: { type: Type.INTEGER },
+                  topic: { type: Type.STRING },
+                  question: { type: Type.STRING },
+                  options: { type: Type.ARRAY, items: { type: Type.STRING } },
+                  correct_answer: { type: Type.STRING },
+                  explanation: { type: Type.STRING },
                 },
+                required: ['day', 'topic', 'question', 'options', 'correct_answer', 'explanation'],
               },
-              required: ['title', 'questions'],
             },
           },
-        })
-      );
+          required: ['title', 'questions'],
+        },
+      });
 
       res.json({ raw: response.text ?? '{}' });
     } catch (err) {
@@ -383,7 +418,7 @@ ${summary}
                 typeof (m as { role?: unknown }).role === 'string' &&
                 typeof (m as { text?: unknown }).text === 'string'
             )
-            .slice(-8)
+            .slice(-6)
         : [];
 
       if (!message) {
@@ -394,50 +429,43 @@ ${summary}
       const contents = [
         ...history.map((h) => ({
           role: h.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: h.text.slice(0, 1800) }],
+          parts: [{ text: h.text.slice(0, 1200) }],
         })),
         { role: 'user', parts: [{ text: message }] },
       ];
 
-      const response = await callWithRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            systemInstruction: systemPrompt,
-            responseMimeType: 'application/json',
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                answer: {
-                  type: Type.STRING,
-                  description: 'Понятный структурированный ответ на русском языке (2-3 абзаца)',
-                },
-                keyTakeaways: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '2-3 ключевых вывода или шага практики',
-                },
-                codeSnippet: {
-                  type: Type.STRING,
-                  description: 'Короткий практический фрагмент кода или конфига (если уместно, иначе пустая строка)',
-                },
-                codeLanguage: {
-                  type: Type.STRING,
-                  description: 'Язык кода, например typescript, bash, json',
-                },
-                nextDepthSuggestions: {
-                  type: Type.ARRAY,
-                  items: { type: Type.STRING },
-                  description: '2-3 коротких вопроса-продолжения для следующего уровня углубления',
-                },
-              },
-              required: ['answer', 'keyTakeaways', 'nextDepthSuggestions'],
+      const response = await generateContentWithFallback(ai, {
+        contents,
+        systemInstruction: systemPrompt,
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            answer: {
+              type: Type.STRING,
+              description: 'Понятный структурированный ответ на русском языке (2-3 абзаца)',
+            },
+            keyTakeaways: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '2-3 ключевых вывода или шага практики',
+            },
+            codeSnippet: {
+              type: Type.STRING,
+              description: 'Короткий практический фрагмент кода или конфига (если уместно, иначе пустая строка)',
+            },
+            codeLanguage: {
+              type: Type.STRING,
+              description: 'Язык кода, например typescript, bash, json',
+            },
+            nextDepthSuggestions: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: '2-3 коротких вопроса-продолжения для следующего уровня углубления',
             },
           },
-        })
-      );
+          required: ['answer', 'keyTakeaways', 'nextDepthSuggestions'],
+        },
+      });
 
       res.json({ raw: response.text ?? '{}' });
     } catch (err) {
