@@ -1,11 +1,42 @@
-<div align="center">
+# Daily AI Mastery
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Обучающее мобильное веб-приложение (PWA) для ежедневного погружения в технологии ИИ, нейросетей, прокси/VPN, безопасности API, MCP-серверов и построения ИИ-агентов.
 
-  <h1>Built with AI Studio</h2>
+## Возможности
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+- **Микрообучение (1 урок в 24 часа)**: предустановленные уроки Дней 1–5 + динамическая генерация Дня 6+ через Gemini API (`JSON Schema`).
+- **Deep Dive («Углубиться в тему»)**: генерация расширенного технического разбора с примерами кода и чек-поинтами для продакшена.
+- **Закрепление знаний**: ежедневный контрольный вопрос по прошлому дню перед открытием нового урока и еженедельный срез из 6 вопросов на каждый 7-й день.
+- **PWA + Push-уведомления**: установка на телефон (`manifest.webmanifest`, кастомный Service Worker с Workbox и Web Push VAPID-напоминаниями об открытии нового урока).
+- **Обход блокировок и BYOK**: поддержка собственного API-ключа Gemini и кастомного Proxy / Base URL (например, Cloudflare Workers), хранящихся локально в `localStorage`.
+- **Синхронизация прогресса**: локальное сохранение в браузере + опциональная облачная синхронизация через Firebase Auth & Firestore.
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+## Быстрый старт
 
-</div>
+```bash
+npm install
+cp .env.example .env
+# Укажите GEMINI_API_KEY в файле .env
+npm run dev
+```
+
+Приложение запустится на `http://localhost:3000`.
+
+## Продакшен-сборка
+
+```bash
+npm run lint
+npm test
+npm run build
+NODE_ENV=production npm start
+```
+
+Собранные статические файлы, PWA-манифест и Service Worker (`sw.js`) формируются в папке `dist/`.
+
+## Переменные окружения
+
+См. `.env.example`:
+
+- `GEMINI_API_KEY` — серверный ключ Gemini API для встроенного защищённого прокси `/api/*`.
+- `PORT` — порт сервера (по умолчанию `3000`).
+- `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` — опциональные VAPID-ключи для Web Push (если не заданы, генерируются автоматически при запуске сервера).

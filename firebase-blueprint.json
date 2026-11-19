@@ -1,0 +1,210 @@
+{
+  "entities": {
+    "UserProgress": {
+      "title": "UserProgress",
+      "description": "Tracks a user's daily AI Mastery progression, streak, quiz accuracy, and 24-hour unlock gate.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "unlockedDay": {
+          "type": "integer"
+        },
+        "completedDays": {
+          "type": "array"
+        },
+        "lastCompletedAt": {
+          "type": "integer"
+        },
+        "correctAnswers": {
+          "type": "integer"
+        },
+        "totalAnswered": {
+          "type": "integer"
+        },
+        "streakDays": {
+          "type": "integer"
+        },
+        "gatePassedForDay": {
+          "type": "integer"
+        },
+        "fastTrackMode": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "uid",
+        "unlockedDay",
+        "completedDays",
+        "lastCompletedAt",
+        "correctAnswers",
+        "totalAnswered",
+        "streakDays",
+        "gatePassedForDay",
+        "fastTrackMode",
+        "updatedAt"
+      ]
+    },
+    "SavedLesson": {
+      "title": "SavedLesson",
+      "description": "User-owned generated lesson (Day 6+) or cached Deep Dive breakdown for any day.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "day": {
+          "type": "integer"
+        },
+        "topic": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "category": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "readMinutes": {
+          "type": "integer"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 20000
+        },
+        "codeExample": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "codeLanguage": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "question": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "options": {
+          "type": "array"
+        },
+        "correctAnswer": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "explanation": {
+          "type": "string",
+          "maxLength": 3000
+        },
+        "deepDiveOverview": {
+          "type": "string",
+          "maxLength": 15000
+        },
+        "deepDiveCode": {
+          "type": "string",
+          "maxLength": 8000
+        },
+        "deepDiveLanguage": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "deepDiveTips": {
+          "type": "array"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "day",
+        "topic",
+        "category",
+        "readMinutes",
+        "content",
+        "question",
+        "options",
+        "correctAnswer",
+        "explanation",
+        "updatedAt"
+      ]
+    },
+    "QuizResult": {
+      "title": "QuizResult",
+      "description": "Completed daily gate quiz or Day-7 weekly synthesis quiz result.",
+      "type": "object",
+      "properties": {
+        "ownerUid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "day": {
+          "type": "integer"
+        },
+        "quizType": {
+          "type": "string",
+          "enum": ["daily", "weekly"]
+        },
+        "score": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "passed": {
+          "type": "boolean"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerUid",
+        "day",
+        "quizType",
+        "score",
+        "total",
+        "passed",
+        "completedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProgress"
+      },
+      "description": "Owner-only user profile and Daily AI Mastery progression document."
+    },
+    "/users/{userId}/lessons/{dayId}": {
+      "schema": {
+        "$ref": "#/entities/SavedLesson"
+      },
+      "description": "Owner-only dynamically generated lessons (Day 6+) and persisted Deep Dive analyses."
+    },
+    "/users/{userId}/quizResults/{resultId}": {
+      "schema": {
+        "$ref": "#/entities/QuizResult"
+      },
+      "description": "Owner-only daily verification and weekly assessment score records."
+    }
+  }
+}

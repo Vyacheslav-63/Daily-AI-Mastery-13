@@ -1,0 +1,6 @@
+{
+  "name": "Daily AI Mastery",
+  "description": "Mobile-first PWA for daily mastery of AI engineering, network proxies, backend security, MCP servers, and Gemini-powered adaptive lessons.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

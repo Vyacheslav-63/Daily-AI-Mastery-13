@@ -1,0 +1,157 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerified() && request.auth.uid == userId;
+    }
+
+    function isValidUserProgress(data, userId) {
+      return data.keys().hasAll([
+        'uid', 'unlockedDay', 'completedDays', 'lastCompletedAt',
+        'correctAnswers', 'totalAnswered', 'streakDays',
+        'gatePassedForDay', 'fastTrackMode', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'uid', 'displayName', 'email', 'unlockedDay', 'completedDays',
+        'lastCompletedAt', 'correctAnswers', 'totalAnswered', 'streakDays',
+        'gatePassedForDay', 'fastTrackMode', 'updatedAt'
+      ])
+      && data.uid == request.auth.uid
+      && data.uid == userId
+      && isValidId(data.uid)
+      && (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120))
+      && (!('email' in data) || (data.email is string && data.email.size() <= 200))
+      && data.unlockedDay is int && data.unlockedDay >= 1 && data.unlockedDay <= 365
+      && data.completedDays is list && data.completedDays.size() <= 365
+      && (data.completedDays.size() == 0 || data.completedDays[0] is int)
+      && data.lastCompletedAt is int && data.lastCompletedAt >= 0
+      && data.correctAnswers is int && data.correctAnswers >= 0
+      && data.totalAnswered is int && data.totalAnswered >= 0
+      && data.correctAnswers <= data.totalAnswered
+      && data.streakDays is int && data.streakDays >= 0 && data.streakDays <= 365
+      && data.gatePassedForDay is int && data.gatePassedForDay >= 0 && data.gatePassedForDay <= 365
+      && data.fastTrackMode is bool
+      && data.updatedAt == request.time;
+    }
+
+    function isValidSavedLesson(data, userId) {
+      return data.keys().hasAll([
+        'ownerUid', 'day', 'topic', 'category', 'readMinutes',
+        'content', 'question', 'options', 'correctAnswer', 'explanation', 'updatedAt'
+      ])
+      && data.keys().hasOnly([
+        'ownerUid', 'day', 'topic', 'category', 'readMinutes',
+        'content', 'codeExample', 'codeLanguage', 'question', 'options',
+        'correctAnswer', 'explanation', 'deepDiveOverview', 'deepDiveCode',
+        'deepDiveLanguage', 'deepDiveTips', 'updatedAt'
+      ])
+      && data.ownerUid == request.auth.uid
+      && data.ownerUid == userId
+      && isValidId(data.ownerUid)
+      && data.day is int && data.day >= 1 && data.day <= 365
+      && data.topic is string && data.topic.size() >= 1 && data.topic.size() <= 240
+      && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+      && data.readMinutes is int && data.readMinutes >= 1 && data.readMinutes <= 60
+      && data.content is string && data.content.size() >= 1 && data.content.size() <= 20000
+      && (!('codeExample' in data) || (data.codeExample is string && data.codeExample.size() <= 8000))
+      && (!('codeLanguage' in data) || (data.codeLanguage is string && data.codeLanguage.size() <= 32))
+      && data.question is string && data.question.size() >= 1 && data.question.size() <= 1000
+      && data.options is list && data.options.size() == 4 && data.options[0] is string
+      && data.correctAnswer is string && data.correctAnswer.size() >= 1 && data.correctAnswer.size() <= 1000
+      && data.explanation is string && data.explanation.size() >= 1 && data.explanation.size() <= 3000
+      && (!('deepDiveOverview' in data) || (data.deepDiveOverview is string && data.deepDiveOverview.size() <= 15000))
+      && (!('deepDiveCode' in data) || (data.deepDiveCode is string && data.deepDiveCode.size() <= 8000))
+      && (!('deepDiveLanguage' in data) || (data.deepDiveLanguage is string && data.deepDiveLanguage.size() <= 32))
+      && (!('deepDiveTips' in data) || (data.deepDiveTips is list && data.deepDiveTips.size() <= 10 && (data.deepDiveTips.size() == 0 || data.deepDiveTips[0] is string)))
+      && data.updatedAt == request.time;
+    }
+
+    function isValidQuizResult(data, userId) {
+      return data.keys().hasAll([
+        'ownerUid', 'day', 'quizType', 'score', 'total', 'passed', 'completedAt'
+      ])
+      && data.keys().hasOnly([
+        'ownerUid', 'day', 'quizType', 'score', 'total', 'passed', 'completedAt'
+      ])
+      && data.ownerUid == request.auth.uid
+      && data.ownerUid == userId
+      && isValidId(data.ownerUid)
+      && data.day is int && data.day >= 1 && data.day <= 365
+      && (data.quizType == 'daily' || data.quizType == 'weekly')
+      && data.score is int && data.score >= 0
+      && data.total is int && data.total >= 1 && data.total <= 20
+      && data.score <= data.total
+      && data.passed is bool
+      && data.completedAt == request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId) && isOwner(userId) && isValidUserProgress(incoming(), userId);
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProgress(incoming(), userId)
+        && incoming().uid == existing().uid
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'unlockedDay', 'completedDays', 'lastCompletedAt',
+            'correctAnswers', 'totalAnswered', 'streakDays',
+            'gatePassedForDay', 'fastTrackMode', 'displayName', 'email', 'updatedAt'
+          ])
+        );
+      allow delete: if false;
+
+      match /lessons/{dayId} {
+        allow get: if isValidId(userId) && isValidId(dayId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(dayId) && isOwner(userId)
+          && isValidSavedLesson(incoming(), userId)
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isValidId(userId) && isValidId(dayId) && isOwner(userId)
+          && isValidSavedLesson(incoming(), userId)
+          && incoming().ownerUid == existing().ownerUid
+          && incoming().day == existing().day
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'deepDiveOverview', 'deepDiveCode', 'deepDiveLanguage', 'deepDiveTips', 'updatedAt'
+          ]);
+        allow delete: if false;
+      }
+
+      match /quizResults/{resultId} {
+        allow get: if isValidId(userId) && isValidId(resultId) && isOwner(userId);
+        allow list: if isValidId(userId) && isOwner(userId) && resource.data.ownerUid == request.auth.uid;
+        allow create: if isValidId(userId) && isValidId(resultId) && isOwner(userId)
+          && isValidQuizResult(incoming(), userId)
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update, delete: if false;
+      }
+    }
+  }
+}
