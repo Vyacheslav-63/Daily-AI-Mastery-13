@@ -423,8 +423,23 @@ export class ErrorOverlay extends HTMLElement {}
     app.use(vite.middlewares);
   } else {
     const distPath = path.resolve(__dirname, 'dist');
-    app.use(express.static(distPath));
+    app.use(
+      express.static(distPath, {
+        setHeaders: (res, filePath) => {
+          if (
+            filePath.endsWith('sw.js') ||
+            filePath.endsWith('index.html') ||
+            filePath.endsWith('manifest.webmanifest')
+          ) {
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+          } else if (filePath.includes(`${path.sep}assets${path.sep}`)) {
+            res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+        },
+      })
+    );
     app.get('*', (_req, res) => {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

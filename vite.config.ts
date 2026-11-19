@@ -20,6 +20,7 @@ export default defineConfig(() => {
         includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png'],
         manifest: {
           id: '/',
+          lang: 'ru',
           name: 'Daily AI Mastery',
           short_name: 'AI Mastery',
           description: 'Ежедневное погружение в технологии ИИ, прокси, безопасность и MCP-серверы.',
@@ -70,7 +71,11 @@ export default defineConfig(() => {
           const srcAssets = path.resolve(rootDir, 'src/assets');
           const distAssets = path.resolve(distDir, 'src/assets');
           if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
-            fs.cpSync(srcAssets, distAssets, {recursive: true, force: true});
+            fs.cpSync(srcAssets, distAssets, {
+              recursive: true,
+              force: true,
+              filter: (src) => !path.basename(src).startsWith('pwa_app_icon_'),
+            });
           }
         },
       },
